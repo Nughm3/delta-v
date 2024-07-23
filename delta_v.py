@@ -4,27 +4,24 @@ from scipy.optimize import minimize
 from sgp4.api import Satrec
 from functools import partial
 
-import math
+import math, sys, os
 import numpy as np
 
-INPUT = "data/cosmos-1408.tle"
-OUTPUT = "delta-v/cosmos-1408.csv"
-
-EPOCHS = 50 # days
-TRANSFER_MAX = 5 # days
+EPOCHS = 50  # days
+TRANSFER_MAX = 5  # days
 
 # SI units
-J2 = 1.08262668e-3
-G = 6.6743015e-11
-M = 5.972e24
-R = 6378137
+J2 = 1.08262668e-3  # J2 perturbation constant
+G = 6.6743015e-11  # gravitational constant (N m^2 kg^-2)
+M = 5.972e24  # mass of earth (kg)
+R = 6378137  # radius of Earth
 
 
 @dataclass(frozen=True)
 class Debris:
-    sma: float  # m
-    incl: float  # radians
-    raan: float  # radians
+    sma: float  # semi-major axis (m)
+    incl: float  # inclination (radians)
+    raan: float  # right ascension of ascending node (radians)
 
     @staticmethod
     def from_tle(tle):
@@ -126,7 +123,7 @@ def optimal_transfer(i, j, k, m):
     )
 
     if not opt.success:
-        print("error:", res.message)
+        print("error:", res.message, file=sys.stderr)
         return None
     sma, incl, cost = float(opt.x[0]), float(opt.x[1]), opt.fun
     return sma, incl, cost
@@ -137,18 +134,20 @@ def calculate_optimal_transfer(debris, delta_v, i, j, k, m):
     if result is not None:
         sma, incl, cost = result
         delta_v[(i + 1, j + 1, k, m)] = (sma, incl, cost)
-        print(f"i={i} j={j} k={k} m={m} : sma={sma}, incl={incl}, cost={cost}", end="\r")
+        print(
+            f"i={i} j={j} k={k} m={m} : sma={sma}, incl={incl}, cost={cost}", end="\r"
+        )
 
 
-def main():
-    global INPUT, OUTPUT
+def main(input, output):
+    global EPOCHS, TRANSFER_MAX
 
     debris = []
-    with open(INPUT) as f:
+    with open(input) as f:
         data = f.read().splitlines()
         for i in range(0, len(data), 3):
             debris.append(Debris.from_tle(data[i : i + 3]))
-    print(f"input read from {INPUT}")
+    print(f"input read from {input}")
 
     delta_v = {}
     n = len(debris)
@@ -162,15 +161,26 @@ def main():
                         if k + m > EPOCHS:
                             break
                         pool.submit(
-                            partial(calculate_optimal_transfer, debris, delta_v), i, j, k, m
+                            partial(calculate_optimal_transfer, debris, delta_v),
+                            i,
+                            j,
+                            k,
+                            m,
                         )
 
-    with open(OUTPUT, "w") as f:
-        for k, v in delta_v.items():
-            line = ",".join(list(k) + list(v))
-            f.write(f"{line}\n")
-    print(f"output written to {OUTPUT}")
+    with open(output, "w") as f:
+        for (i, j, k, m), (sma, incl, cost) in delta_v.items():
+            f.write(f"{i},{j},{k},{m},{sma},{incl},{cost}\n")
+    print(f"\noutput written to {output}")
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) == 2:
+        cluster = sys.argv[1]
+    else:
+        cluster = "cosmos-1408"
+
+    main(
+        os.path.join("data", f"{cluster}.tle"),
+        os.path.join("delta-v", f"{cluster}.csv"),
+    )
