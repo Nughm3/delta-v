@@ -7,13 +7,16 @@ from functools import partial
 import math, sys, os
 import numpy as np
 
-EPOCHS = 50  # days
-TRANSFER_MAX = 5  # days
+T_MAX = 300 # days
+EPOCHS = 60
+EPOCH_LENGTH = T_MAX / EPOCHS
+TRANSFER_MIN = 1 # epochs
+TRANSFER_MAX = 20  # epochs
 
 # SI units
 J2 = 1.08262668e-3  # J2 perturbation constant
 G = 6.6743015e-11  # gravitational constant (N m^2 kg^-2)
-M = 5.972e24  # mass of earth (kg)
+M = 5.972e24  # mass of earth
 R = 6378137  # radius of Earth
 
 
@@ -36,8 +39,8 @@ class Debris:
 
 def raan_constraint(i, j, k, m):
     SECONDS_IN_DAY = 60 * 60 * 24
-    k *= SECONDS_IN_DAY
-    m *= SECONDS_IN_DAY
+    k *= SECONDS_IN_DAY * EPOCH_LENGTH
+    m *= SECONDS_IN_DAY * EPOCH_LENGTH
 
     def constraint_function(x):
         sma, incl = x[0], x[1]
@@ -108,29 +111,37 @@ def cosine_rule(a, b, C):
     return math.sqrt(a**2 + b**2 - 2 * a * b * math.cos(C))
 
 
-def optimal_transfer(i, j, k, m):
-    x0 = np.array([(i.sma + j.sma) / 2, (i.incl + j.incl) / 2])
-    constraint = {"type": "eq", "fun": raan_constraint(i, j, k, m)}
-    bounds = [(6000000, None), (0, math.tau)]
+def optimal_transfer(debris, i, j, k, m):
+    di, dj = debris[i], debris[j]
+    x0 = np.array([(di.sma + dj.sma) / 2, (di.incl + dj.incl) / 2])
+    constraint = {"type": "eq", "fun": raan_constraint(di, dj, k, m)}
+    bounds = [(6400000, None), (0, math.tau)]
 
-    opt = minimize(
-        delta_v,
-        x0,
-        args=(i, j),
-        method="SLSQP",
-        constraints=[constraint],
-        bounds=bounds,
-    )
+    try:
+        opt = minimize(
+            delta_v,
+            x0,
+            args=(di, dj),
+            method="SLSQP",
+            constraints=[constraint],
+            bounds=bounds,
+        )
+    except Exception as e:
+        print("error:", e)
+        print("\n")
+        return None
 
     if not opt.success:
-        print("error:", res.message, file=sys.stderr)
+        print(i, j, k, m)
+        print("error:", opt.message, file=sys.stderr)
+        print("\n")
         return None
     sma, incl, cost = float(opt.x[0]), float(opt.x[1]), opt.fun
     return sma, incl, cost
 
 
 def calculate_optimal_transfer(debris, delta_v, i, j, k, m):
-    result = optimal_transfer(debris[i], debris[j], k, m)
+    result = optimal_transfer(debris, i, j, k, m)
     if result is not None:
         sma, incl, cost = result
         delta_v[(i + 1, j + 1, k, m)] = (sma, incl, cost)
@@ -151,22 +162,23 @@ def main(input, output):
 
     delta_v = {}
     n = len(debris)
-    with ThreadPoolExecutor() as pool:
-        for i in range(n):
-            for j in range(n):
-                if i == j:
-                    continue
-                for k in range(1, EPOCHS + 1):
-                    for m in range(1, TRANSFER_MAX + 1):
-                        if k + m > EPOCHS:
-                            break
-                        pool.submit(
-                            partial(calculate_optimal_transfer, debris, delta_v),
-                            i,
-                            j,
-                            k,
-                            m,
-                        )
+    # with ThreadPoolExecutor() as pool:
+    for i in range(n):
+        for j in range(n):
+            if i == j:
+                continue
+            for k in range(1, EPOCHS + 1):
+                for m in range(TRANSFER_MIN, TRANSFER_MAX + 1):
+                    if k + m > EPOCHS:
+                        break
+                    # pool.submit(
+                    #     partial(calculate_optimal_transfer, debris, delta_v),
+                    #     i,
+                    #     j,
+                    #     k,
+                    #     m,
+                    # )
+                    calculate_optimal_transfer(debris, delta_v, i, j, k, m)
 
     with open(output, "w") as f:
         for (i, j, k, m), (sma, incl, cost) in delta_v.items():
@@ -182,5 +194,5 @@ if __name__ == "__main__":
 
     main(
         os.path.join("data", f"{cluster}.tle"),
-        os.path.join("delta-v", f"{cluster}.csv"),
+        os.path.join("output", f"{cluster}.csv"),
     )
